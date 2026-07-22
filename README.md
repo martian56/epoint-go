@@ -54,8 +54,8 @@ if callback.OK() {
 ```go
 client := epoint.New("i000000001", "your-private-key",
 	epoint.WithBaseURL("https://epoint.az"),
-	epoint.WithLanguage("az"),
-	epoint.WithCurrency("AZN"),
+	epoint.WithLanguage(string(epoint.LanguageAZ)),
+	epoint.WithCurrency(string(epoint.CurrencyAZN)),
 	epoint.WithRedirectURLs("https://shop.example/thanks", "https://shop.example/failed"),
 	epoint.WithHTTPClient(customClient),
 )
@@ -92,8 +92,43 @@ status.String("rrn")     // bank reference number
 status.Raw               // the full response map
 ```
 
-A declined payment is not an error. `GetStatus` returns normally with `Status() == "failed"`, which
-you read through `OK()`. `GetInstallmentPlans` returns a slice and `ListWallets` returns a map.
+A declined payment is not an error. `GetStatus` returns normally with a status of
+`epoint.StatusFailed`, which you read through `OK()`. `GetInstallmentPlans` returns a slice and
+`ListWallets` returns a map.
+
+## Enums
+
+Every value the API uses has a typed constant. They come from the sandbox's own definitions, so
+they match what production sends. Each type is a `string`, so a plain string still converts.
+
+```go
+client := epoint.New(publicKey, privateKey,
+	epoint.WithLanguage(string(epoint.LanguageEN)),
+	epoint.WithCurrency(string(epoint.CurrencyUSD)),
+)
+
+status, err := client.GetStatus(ctx, transaction)
+if err == nil && epoint.Status(status.Status()).Settled() {
+	fulfil(orderID)
+}
+```
+
+| Type | Values |
+|---|---|
+| `Status` | new, success, failed, error, returned, server_error |
+| `CardStatus` | new, active, pending, rejected, expired, session_expired |
+| `InvoiceStatus` | waiting_for_payment, paid, canceled |
+| `B2BStatus` | PENDING, PROCESSING, SUCCESS, FAILED |
+| `OperationCode` | 001 card registration, 100 payment, 200 registration with payment |
+| `Language` | az, en, ru |
+| `Currency` | AZN, USD, EUR, RUB |
+
+Currency is not uniform across the API. Checkout takes all four, but split, pre-auth, refund,
+reverse, payout and wallet take AZN and nothing else. `SupportedCurrencies` and `AZNOnly` hold
+those two sets.
+
+`Status.Settled()` reports whether the money moved and `CardStatus.Usable()` whether a card can
+be charged.
 
 ## Methods
 
