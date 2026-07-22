@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -119,17 +121,96 @@ func grantAll(t *testing.T) {
 	})
 }
 
+// setFeatures flips merchant capabilities and waits until the API agrees.
+//
+// The PATCH response cannot be trusted on its own: the sandbox serialises the
+// merchant after flushing but before the transaction commits, so it reports the
+// new value while a request arriving straight after can still read the old one.
+// Reading it back in a separate request is what confirms the change landed.
 func setFeatures(t *testing.T, features map[string]bool) {
 	t.Helper()
 	body, _ := json.Marshal(features)
-	req, _ := http.NewRequest(http.MethodPatch,
-		sandboxURL()+"/_sandbox/merchants/"+sandboxPublicKey, bytes.NewReader(body))
+
+	if _, err := requestMerchant(http.MethodPatch, body); err != nil {
+		t.Fatalf("could not set %v on %s: %v", features, sandboxPublicKey, err)
+	}
+
+	for attempt := 0; attempt < 40; attempt++ {
+		merchant, err := readMerchant()
+		if err == nil && featuresMatch(merchant, features) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("%s never reported %v", sandboxPublicKey, features)
+}
+
+func requestMerchant(method string, body []byte) (map[string]any, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequest(method, sandboxURL()+"/_sandbox/merchants/"+sandboxPublicKey, reader)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("the sandbox answered %d", resp.StatusCode)
+	}
+
+	var merchant map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&merchant); err != nil {
+		return nil, err
+	}
+	return merchant, nil
+}
+
+// readMerchant goes through the list, because there is no route for a single
+// merchant: /_sandbox/merchants/{key} is only a PATCH, and a GET there falls
+// through to the dashboard and answers with HTML.
+func readMerchant() (map[string]any, error) {
+	resp, err := http.Get(sandboxURL() + "/_sandbox/merchants")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("the sandbox answered %d", resp.StatusCode)
+	}
+
+	var merchants []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&merchants); err != nil {
+		return nil, err
+	}
+	for _, merchant := range merchants {
+		if merchant["public_key"] == sandboxPublicKey {
+			return merchant, nil
+		}
+	}
+	return nil, fmt.Errorf("%s is not in the merchant list", sandboxPublicKey)
+}
+
+func featuresMatch(merchant map[string]any, want map[string]bool) bool {
+	features, ok := merchant["features"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for name, expected := range want {
+		if got, ok := features[name].(bool); !ok || got != expected {
+			return false
+		}
+	}
+	return true
 }
 
 func TestSandboxHeartbeat(t *testing.T) {
