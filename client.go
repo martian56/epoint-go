@@ -56,8 +56,8 @@ func New(publicKey, privateKey string, opts ...Option) *Client {
 		publicKey:  publicKey,
 		privateKey: privateKey,
 		baseURL:    productionURL,
-		language:   "az",
-		currency:   "AZN",
+		language:   string(LanguageAZ),
+		currency:   string(CurrencyAZN),
 		http:       &http.Client{Timeout: 30 * time.Second},
 	}
 	for _, opt := range opts {
@@ -226,7 +226,7 @@ func (c *Client) buildBody(payload map[string]any) (signedBody, error) {
 }
 
 func parse(statusCode int, body map[string]any) (*Response, error) {
-	if body["status"] == "error" {
+	if body["status"] == string(StatusError) {
 		return nil, &GatewayError{
 			Message: stringOr(body["message"], "request refused"),
 			Code:    stringOr(body["code"], ""),
