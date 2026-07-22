@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - run: go build ./...
+      - run: go test ./...
+
+      # Go has no registry to push to. Asking the proxy for the version is what
+      # makes it fetch and cache the tag, so go get works straight away.
+      - name: Warm the module proxy
+        run: |
+          module=$(go list -m)
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS "https://proxy.golang.org/${module}/@v/${GITHUB_REF_NAME}.info"; then
+              echo
+              echo "cached by the proxy"
+              exit 0
+            fi
+            echo "not there yet, waiting"
+            sleep 15
+          done
+          echo "the proxy did not pick it up; it will on the first go get"
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Take the notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v want="## $version" '
+            $0 == want { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md || true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -s notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          fi
