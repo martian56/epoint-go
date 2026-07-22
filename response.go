@@ -11,7 +11,7 @@ func (r *Response) Status() string {
 }
 
 func (r *Response) OK() bool {
-	return r.Raw["status"] == "success"
+	return Status(r.String("status")).Settled()
 }
 
 func (r *Response) Transaction() string {
@@ -58,7 +58,7 @@ type Callback struct {
 }
 
 func (c *Callback) OK() bool {
-	return c.Status == "success"
+	return Status(c.Status).Settled()
 }
 
 func toCallback(raw map[string]any) *Callback {
