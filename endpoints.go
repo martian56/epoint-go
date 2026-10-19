@@ -27,9 +27,11 @@ type ReverseOptions struct {
 }
 
 type RegisterCardOptions struct {
-	Description string
-	Language    string
-	ForPayouts  bool
+	Description        string
+	Language           string
+	ForPayouts         bool
+	SuccessRedirectURL string
+	ErrorRedirectURL   string
 }
 
 type InstallmentQueryOptions struct {
@@ -152,9 +154,11 @@ func (c *Client) RegisterCard(ctx context.Context, opts *RegisterCardOptions) (*
 		opts = &RegisterCardOptions{}
 	}
 	return c.post(ctx, "/api/1/card-registration", map[string]any{
-		"language":    orDefault(opts.Language, c.language),
-		"refund":      boolInt(opts.ForPayouts),
-		"description": opts.Description,
+		"language":             orDefault(opts.Language, c.language),
+		"refund":               boolInt(opts.ForPayouts),
+		"description":          opts.Description,
+		"success_redirect_url": orDefault(opts.SuccessRedirectURL, c.successRedirectURL),
+		"error_redirect_url":   orDefault(opts.ErrorRedirectURL, c.errorRedirectURL),
 	})
 }
 

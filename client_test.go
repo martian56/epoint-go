@@ -189,3 +189,54 @@ func TestBankTransferSendsJSON(t *testing.T) {
 		t.Fatal("signature missing from JSON body")
 	}
 }
+
+func TestRegisterCardSendsTheRedirectURLsItIsGiven(t *testing.T) {
+	server, seen := recording(t, 200, map[string]any{"status": "success", "card_id": "ce1"})
+	_, err := clientFor(server).RegisterCard(context.Background(), &RegisterCardOptions{
+		SuccessRedirectURL: "https://shop.test/ok",
+		ErrorRedirectURL:   "https://shop.test/fail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen.payload["success_redirect_url"] != "https://shop.test/ok" {
+		t.Fatalf("success_redirect_url = %v", seen.payload["success_redirect_url"])
+	}
+	if seen.payload["error_redirect_url"] != "https://shop.test/fail" {
+		t.Fatalf("error_redirect_url = %v", seen.payload["error_redirect_url"])
+	}
+}
+
+func TestRegisterCardFallsBackToTheClientRedirectURLs(t *testing.T) {
+	server, seen := recording(t, 200, map[string]any{"status": "success", "card_id": "ce1"})
+	client := New(testPublicKey, testMerchantPK, WithBaseURL(server.URL),
+		WithRedirectURLs("https://shop.test/default-ok", "https://shop.test/default-fail"))
+	ctx := context.Background()
+
+	if _, err := client.RegisterCard(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if seen.payload["success_redirect_url"] != "https://shop.test/default-ok" ||
+		seen.payload["error_redirect_url"] != "https://shop.test/default-fail" {
+		t.Fatalf("defaults not used: %v", seen.payload)
+	}
+
+	if _, err := client.RegisterCard(ctx, &RegisterCardOptions{SuccessRedirectURL: "https://shop.test/ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if seen.payload["success_redirect_url"] != "https://shop.test/ok" ||
+		seen.payload["error_redirect_url"] != "https://shop.test/default-fail" {
+		t.Fatalf("override not used: %v", seen.payload)
+	}
+
+	bare, bareSeen := recording(t, 200, map[string]any{"status": "success", "card_id": "ce1"})
+	if _, err := clientFor(bare).RegisterCard(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := bareSeen.payload["success_redirect_url"]; ok {
+		t.Fatalf("empty success_redirect_url was sent: %v", bareSeen.payload)
+	}
+	if _, ok := bareSeen.payload["error_redirect_url"]; ok {
+		t.Fatalf("empty error_redirect_url was sent: %v", bareSeen.payload)
+	}
+}
