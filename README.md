@@ -130,6 +130,28 @@ those two sets.
 `Status.Settled()` reports whether the money moved and `CardStatus.Usable()` whether a card can
 be charged.
 
+## Saving a card without a payment
+
+`RegisterCard` saves a card with no charge, for example when the first period is free and later
+ones are charged with `ChargeSavedCard`. Keep the `card_id` it returns and send the customer to
+its `RedirectURL()`.
+
+```go
+reg, err := client.RegisterCard(ctx, &epoint.RegisterCardOptions{
+	Description:        "Card for renewals",
+	SuccessRedirectURL: "https://shop.example/card/saved",
+	ErrorRedirectURL:   "https://shop.example/card/failed",
+})
+if err != nil {
+	return err
+}
+storeCard(reg.String("card_id"))
+```
+
+The customer comes back to `SuccessRedirectURL` or `ErrorRedirectURL`, or to the client's own
+defaults from `WithRedirectURLs` when neither is given. A card can be charged once `GetCardStatus`
+reports it `active`.
+
 ## Methods
 
 | Group | Methods |

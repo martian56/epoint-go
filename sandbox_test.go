@@ -264,6 +264,63 @@ func TestSandboxDeclinedCard(t *testing.T) {
 	}
 }
 
+func TestSandboxCardRegistrationReturnsToTheRedirectURLs(t *testing.T) {
+	requireSandbox(t)
+	client := newSandboxClient()
+	ctx := context.Background()
+	opts := &epoint.RegisterCardOptions{
+		Description:        "redirect check",
+		SuccessRedirectURL: "https://shop.test/card-ok",
+		ErrorRedirectURL:   "https://shop.test/card-fail",
+	}
+	approved, err := client.RegisterCard(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declined, err := client.RegisterCard(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	submit := func(redirectURL, card string) *http.Response {
+		parts := strings.Split(strings.TrimRight(redirectURL, "/"), "/")
+		token := strings.Split(parts[len(parts)-1], "?")[0]
+		web := &http.Client{
+			Timeout:       10 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
+		resp, err := web.PostForm(sandboxURL()+"/checkout/"+token, url.Values{
+			"card_number": {card},
+			"card_holder": {"TESTER"},
+			"month":       {"12"},
+			"year":        {"30"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	ok := submit(approved.RedirectURL(), "4111111111111111")
+	failed := submit(declined.RedirectURL(), "4000000000000116")
+	if ok.StatusCode != http.StatusSeeOther || ok.Header.Get("Location") != "https://shop.test/card-ok" {
+		t.Fatalf("approved card went to %d %q", ok.StatusCode, ok.Header.Get("Location"))
+	}
+	if failed.StatusCode != http.StatusSeeOther || failed.Header.Get("Location") != "https://shop.test/card-fail" {
+		t.Fatalf("declined card went to %d %q", failed.StatusCode, failed.Header.Get("Location"))
+	}
+
+	cardID := approved.String("card_id")
+	active := waitFor(t, func() (*epoint.Response, bool) {
+		status, err := client.GetCardStatus(ctx, cardID)
+		return status, err == nil && status.String("status") == "active"
+	})
+	if active.String("status") != "active" {
+		t.Fatalf("card not active: %+v", active.Raw)
+	}
+}
+
 func TestSandboxSavedCard(t *testing.T) {
 	requireSandbox(t)
 	client := newSandboxClient()
