@@ -12,6 +12,13 @@ type PaymentOptions struct {
 	SuccessRedirectURL string
 	ErrorRedirectURL   string
 	OtherAttr          any
+	IsInstallment      *bool
+}
+
+type SignedForm struct {
+	URL       string
+	Data      string
+	Signature string
 }
 
 type ChargeOptions struct {
@@ -35,9 +42,11 @@ type RegisterCardOptions struct {
 }
 
 type InstallmentQueryOptions struct {
-	Amount   *float64
-	Language string
-	Currency string
+	Amount      *float64
+	Language    string
+	Currency    string
+	Description string
+	OtherAttr   any
 }
 
 type InvoiceOptions struct {
@@ -54,18 +63,19 @@ type InvoiceOptions struct {
 }
 
 type BankTransfer struct {
-	OrderID        string
-	Amount         float64
-	Description    string
-	IBAN           string
-	Name           string
-	TIN            string
-	BankCode       string
-	BankName       string
-	Email          string
-	Address        string
-	AdditionalInfo string
-	WebhookURL     string
+	OrderID         string
+	Amount          float64
+	Description     string
+	IBAN            string
+	Name            string
+	TIN             string
+	BankCode        string
+	BankName        string
+	Email           string
+	Address         string
+	AdditionalInfo  string
+	WebhookURL      string
+	BulkDescription string
 }
 
 func (c *Client) checkout(amount float64, orderID string, opts *PaymentOptions) map[string]any {
@@ -84,6 +94,14 @@ func (c *Client) checkout(amount float64, orderID string, opts *PaymentOptions) 
 	}
 }
 
+func (c *Client) installmentCheckout(amount float64, orderID string, opts *PaymentOptions) map[string]any {
+	payload := c.checkout(amount, orderID, opts)
+	if opts != nil && opts.IsInstallment != nil {
+		payload["is_installment"] = boolInt(*opts.IsInstallment)
+	}
+	return payload
+}
+
 func orDefault(value, fallback string) string {
 	if value != "" {
 		return value
@@ -92,11 +110,15 @@ func orDefault(value, fallback string) string {
 }
 
 func (c *Client) CreatePayment(ctx context.Context, amount float64, orderID string, opts *PaymentOptions) (*Response, error) {
-	return c.post(ctx, "/api/1/request", c.checkout(amount, orderID, opts))
+	return c.post(ctx, "/api/1/request", c.installmentCheckout(amount, orderID, opts))
+}
+
+func (c *Client) CheckoutForm(amount float64, orderID string, opts *PaymentOptions) (*SignedForm, error) {
+	return c.signedForm("/api/1/checkout", c.installmentCheckout(amount, orderID, opts))
 }
 
 func (c *Client) CreatePaymentRequest(ctx context.Context, amount float64, orderID string, opts *PaymentOptions) (*Response, error) {
-	return c.post(ctx, "/api/1/payment-request", c.checkout(amount, orderID, opts))
+	return c.post(ctx, "/api/1/payment-request", c.installmentCheckout(amount, orderID, opts))
 }
 
 func (c *Client) CreateAmexPayment(ctx context.Context, amount float64, orderID string, opts *PaymentOptions) (*Response, error) {
@@ -119,7 +141,11 @@ func (c *Client) Capture(ctx context.Context, transaction string, amount float64
 }
 
 func (c *Client) GetStatus(ctx context.Context, transaction string) (*Response, error) {
-	return c.post(ctx, "/api/1/get-status", map[string]any{"transaction": transaction})
+	status, parsed, err := c.sendForm(ctx, http.MethodPost, "/api/1/get-status", map[string]any{"transaction": transaction})
+	if err != nil {
+		return nil, err
+	}
+	return parsePaymentState(status, parsed)
 }
 
 func (c *Client) GetCardStatus(ctx context.Context, cardID string) (*Response, error) {
@@ -131,6 +157,13 @@ func (c *Client) CreateSplitPayment(ctx context.Context, amount float64, orderID
 	payload["split_user"] = splitAccount
 	payload["split_amount"] = money(splitAmount)
 	return c.post(ctx, "/api/1/split-request", payload)
+}
+
+func (c *Client) CreateTokenSplitPayment(ctx context.Context, amount float64, orderID, splitAccount string, splitAmount float64, opts *PaymentOptions) (*Response, error) {
+	payload := c.checkout(amount, orderID, opts)
+	payload["split_user"] = splitAccount
+	payload["split_amount"] = money(splitAmount)
+	return c.post(ctx, "/api/1/token/split-payment", payload)
 }
 
 func (c *Client) SplitChargeSavedCard(ctx context.Context, cardID string, amount float64, orderID, splitAccount string, splitAmount float64, opts *ChargeOptions) (*Response, error) {
@@ -214,9 +247,11 @@ func (c *Client) GetInstallmentPlans(ctx context.Context, orderID string, opts *
 		opts = &InstallmentQueryOptions{}
 	}
 	payload := map[string]any{
-		"order_id": orderID,
-		"currency": orDefault(opts.Currency, c.currency),
-		"language": orDefault(opts.Language, c.language),
+		"order_id":    orderID,
+		"currency":    orDefault(opts.Currency, c.currency),
+		"language":    orDefault(opts.Language, c.language),
+		"description": opts.Description,
+		"other_attr":  opts.OtherAttr,
 	}
 	if opts.Amount != nil {
 		payload["amount"] = money(*opts.Amount)
@@ -334,18 +369,19 @@ func (c *Client) SendInvoiceEmail(ctx context.Context, invoiceID int, email stri
 
 func (c *Client) CreateBankTransfer(ctx context.Context, transfer BankTransfer) (*Response, error) {
 	return c.postJSON(ctx, "/api/1/b2b/payment", map[string]any{
-		"order_id":        transfer.OrderID,
-		"amount":          money(transfer.Amount),
-		"description":     transfer.Description,
-		"iban":            transfer.IBAN,
-		"name":            transfer.Name,
-		"tin":             transfer.TIN,
-		"bank_code":       transfer.BankCode,
-		"bank_name":       transfer.BankName,
-		"email":           transfer.Email,
-		"address":         transfer.Address,
-		"additional_info": transfer.AdditionalInfo,
-		"webhook_url":     transfer.WebhookURL,
+		"order_id":         transfer.OrderID,
+		"amount":           money(transfer.Amount),
+		"description":      transfer.Description,
+		"iban":             transfer.IBAN,
+		"name":             transfer.Name,
+		"tin":              transfer.TIN,
+		"bank_code":        transfer.BankCode,
+		"bank_name":        transfer.BankName,
+		"email":            transfer.Email,
+		"address":          transfer.Address,
+		"additional_info":  transfer.AdditionalInfo,
+		"webhook_url":      transfer.WebhookURL,
+		"bulk_description": transfer.BulkDescription,
 	})
 }
 

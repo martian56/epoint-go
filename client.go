@@ -186,6 +186,14 @@ func (c *Client) postRaw(ctx context.Context, path string, payload map[string]an
 	return value, nil
 }
 
+func (c *Client) signedForm(path string, payload map[string]any) (*SignedForm, error) {
+	body, err := c.buildBody(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &SignedForm{URL: c.baseURL + path, Data: body.data, Signature: body.signature}, nil
+}
+
 func (c *Client) postJSON(ctx context.Context, path string, payload map[string]any) (*Response, error) {
 	body, err := c.buildBody(payload)
 	if err != nil {
@@ -239,6 +247,15 @@ func parse(statusCode int, body map[string]any) (*Response, error) {
 		return nil, &TransportError{Message: detail, StatusCode: statusCode}
 	}
 	return &Response{Raw: body}, nil
+}
+
+func parsePaymentState(statusCode int, body map[string]any) (*Response, error) {
+	if statusCode < 400 && body["status"] == string(StatusError) {
+		if transaction, ok := body["transaction"].(string); ok && transaction != "" {
+			return &Response{Raw: body}, nil
+		}
+	}
+	return parse(statusCode, body)
 }
 
 func stringOr(value any, fallback string) string {

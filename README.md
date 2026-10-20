@@ -2,8 +2,9 @@
 
 Go client for the [epoint.az](https://epoint.az) payment gateway.
 
-Covers all 30 documented endpoints: payments, saved cards, refunds and payouts, split payments,
-pre-authorisation, installments, wallets, Apple Pay and Google Pay, invoices, and B2B transfers.
+Covers every documented endpoint: payments, the checkout form post, saved cards, refunds and payouts,
+split payments, pre-authorisation, installments, wallets, Apple Pay and Google Pay, invoices, and B2B
+transfers.
 No dependencies outside the standard library.
 
 ```bash
@@ -88,13 +89,26 @@ through `Get`, `String`, or the raw map:
 status, err := client.GetStatus(ctx, "te0000000001")
 status.Status()          // "success"
 status.OK()              // true
-status.String("rrn")     // bank reference number
+status.RRN()             // bank reference number
+status.Amount()          // 25.5
 status.Raw               // the full response map
 ```
 
+The accessors are `Status`, `OK`, `Transaction`, `RedirectURL`, `Message`, `TraceID`, `Code`,
+`BankTransaction`, `BankResponse`, `OperationCode`, `RRN`, `CardName`, `CardMask`, `Amount`,
+`CardID`, `OrderID` and `WidgetURL`. Each returns the zero value when the field is missing.
+`Amount` reads a number or a numeric string.
+
+`OK()` is true for `success`, for the B2B `SUCCESS` and for the heartbeat's `ok`. It is false for
+every other status, including `error`, `failed`, `server_error` and `returned`.
+
 A declined payment is not an error. `GetStatus` returns normally with a status of
-`epoint.StatusFailed`, which you read through `OK()`. `GetInstallmentPlans` returns a slice and
-`ListWallets` returns a map.
+`epoint.StatusFailed`, which you read through `OK()`. The same goes for a payment that ended in
+`error`, `server_error` or `returned`. The rule for `GetStatus` is exact: a 2xx answer with
+`status: "error"` and a non-empty `transaction` string is a payment state and comes back as a
+`Response`. A non-2xx answer, or an error answer with no transaction, such as an unknown
+transaction, is still returned as an error. Every other method treats `status: "error"` as a
+`*GatewayError`, as before. `GetInstallmentPlans` returns a slice and `ListWallets` returns a map.
 
 ## Enums
 
@@ -152,13 +166,54 @@ The customer comes back to `SuccessRedirectURL` or `ErrorRedirectURL`, or to the
 defaults from `WithRedirectURLs` when neither is given. A card can be charged once `GetCardStatus`
 reports it `active`.
 
+## The checkout form post
+
+`/api/1/checkout` is a browser form post, not a JSON call. `CheckoutForm` takes the same arguments
+as `CreatePayment`, makes no request, and returns the form action URL with the signed `data` and
+`signature` fields. Render them as a form that submits itself, and epoint answers with a redirect to
+its card page:
+
+```go
+form, err := client.CheckoutForm(30.75, "order-1", &epoint.PaymentOptions{Description: "Test order"})
+if err != nil {
+	return err
+}
+page := template.Must(template.New("pay").Parse(`<form id="pay" method="post" action="{{.URL}}">
+<input type="hidden" name="data" value="{{.Data}}">
+<input type="hidden" name="signature" value="{{.Signature}}">
+</form>
+<script>document.getElementById("pay").submit()</script>`))
+page.Execute(w, form)
+```
+
+`IsInstallment` on `PaymentOptions` sends `is_installment` as 1 or 0, and is left out when nil. It
+is used by `CreatePayment`, `CreatePaymentRequest` and `CheckoutForm`.
+
+## B2B webhook
+
+`ParseB2BWebhook` turns the B2B webhook body into a `*B2BWebhook` with `OrderID`, `Status`,
+`Amount`, `PayeeIBAN`, `PayeeName` and `ErrorMessage`. Unknown fields are ignored and an unknown
+status is kept as it came.
+
+```go
+hook, err := epoint.ParseB2BWebhook(body)
+if err != nil {
+	http.Error(w, "invalid", http.StatusBadRequest)
+	return
+}
+transfer, err := client.GetBankTransfer(ctx, hook.OrderID)
+```
+
+The docs define no signature for this webhook, so anyone can post one. Confirm the transfer, for
+example with `GetBankTransfer`, before acting on it.
+
 ## Methods
 
 | Group | Methods |
 |---|---|
-| Checkout | `CreatePayment`, `CreatePaymentRequest`, `CreateAmexPayment`, `ChangePaymentSum` |
+| Checkout | `CreatePayment`, `CheckoutForm`, `CreatePaymentRequest`, `CreateAmexPayment`, `ChangePaymentSum` |
 | Status | `GetStatus`, `GetCardStatus`, `GetBankTransfer` |
-| Split | `CreateSplitPayment`, `SplitChargeSavedCard` |
+| Split | `CreateSplitPayment`, `CreateTokenSplitPayment`, `SplitChargeSavedCard` |
 | Pre-auth | `Reserve`, `Capture` |
 | Saved cards | `RegisterCard`, `RegisterCardAndPay`, `ChargeSavedCard` |
 | Money back | `Refund`, `Reverse` |
@@ -166,8 +221,15 @@ reports it `active`.
 | Wallets | `ListWallets`, `PayWithWallet` |
 | Apple Pay, Google Pay | `CreateWidget` |
 | Invoices | `CreateInvoice`, `UpdateInvoice`, `GetInvoice`, `ListInvoices`, `SendInvoiceSMS`, `SendInvoiceEmail` |
-| B2B | `CreateBankTransfer`, `GetBankTransfer` |
+| B2B | `CreateBankTransfer`, `GetBankTransfer`, `ParseB2BWebhook` |
 | Health | `Heartbeat` |
+
+`CreateTokenSplitPayment` posts to `/api/1/token/split-payment`, the Apple Pay and Google Pay
+split, with the same arguments as `CreateSplitPayment`. The docs give no field for the wallet
+token.
+
+Not supported: `invoice_images[]` on invoices. The docs give no way to send it and the sandbox does
+not accept it.
 
 ## Errors
 
@@ -175,7 +237,7 @@ Use `errors.As` to inspect what went wrong:
 
 | Type | Returned when |
 |---|---|
-| `*GatewayError` | epoint returned `status: error`. Has `Code`, `Status`, `Message`, `Payload`. |
+| `*GatewayError` | epoint returned `status: error`, except a payment state from `GetStatus`. Has `Code`, `Status`, `Message`, `Payload`. |
 | `*TransportError` | Network failure, or a non-JSON or `4xx`/`5xx` response. Has `StatusCode`. |
 | `*SignatureError` | A callback's signature did not match, or its data would not decode |
 
